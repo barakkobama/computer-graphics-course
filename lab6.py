@@ -1,228 +1,238 @@
 #!/usr/bin/env python3
+
+import ctypes
 import sys
 
 from glfw.GLFW import *
 
+import glm
+
+import numpy
+
 from OpenGL.GL import *
 from OpenGL.GLU import *
 
-from PIL import Image
+
+rendering_program = None
+vertex_array_object = None
+vertex_buffer = None
+
+P_matrix = None
 
 
-viewer = [0.0, 0.0, 10.0]
+def compile_shaders():
+    vertex_shader_source = """
+        #version 330 core
 
-theta = 0.0
-pix2angle = 1.0
+        in vec3 color;
+        layout(location = 0) in vec4 position;
 
-left_mouse_button_pressed = 0
-mouse_x_pos_old = 0
-delta_x = 0
 
-z_pressed = 0
-space_pressed = 0
+        out vec3 vertexColor;
 
-mat_ambient = [1.0, 1.0, 1.0, 1.0]
-mat_diffuse = [1.0, 1.0, 1.0, 1.0]
-mat_specular = [1.0, 1.0, 1.0, 1.0]
-mat_shininess = 20.0
+        uniform mat4 M_matrix;
+        uniform mat4 V_matrix;
+        uniform mat4 P_matrix;
 
-light_ambient = [0.1, 0.1, 0.0, 1.0]
-light_diffuse = [0.8, 0.8, 0.0, 1.0]
-light_specular = [1.0, 1.0, 1.0, 1.0]
-light_position = [0.0, 0.0, 10.0, 1.0]
+        void main(void) {
+            gl_Position = P_matrix * V_matrix * M_matrix * position;
+            vertexColor = color;
+        }
+    """
 
-att_constant = 1.0
-att_linear = 0.05
-att_quadratic = 0.001
+    fragment_shader_source = """
+        #version 330 core
 
-image = Image.open("tekstrua.tga")
-image2 = Image.open("tekstura2.tga")
+        in vec3 vertexColor;
+
+        out vec4 color;
+
+        void main(void) {
+            color = vec4(vertexColor,1.0);
+        }
+    """
+
+    vertex_shader = glCreateShader(GL_VERTEX_SHADER)
+    glShaderSource(vertex_shader, [vertex_shader_source])
+    glCompileShader(vertex_shader)
+    success = glGetShaderiv(vertex_shader, GL_COMPILE_STATUS)
+
+    if not success:
+        print('Shader compilation error:')
+        print(glGetShaderInfoLog(vertex_shader).decode('UTF-8'))
+
+    fragment_shader = glCreateShader(GL_FRAGMENT_SHADER)
+    glShaderSource(fragment_shader, [fragment_shader_source])
+    glCompileShader(fragment_shader)
+    success = glGetShaderiv(fragment_shader, GL_COMPILE_STATUS)
+
+    if not success:
+        print('Shader compilation error:')
+        print(glGetShaderInfoLog(fragment_shader).decode('UTF-8'))
+
+    program = glCreateProgram()
+    glAttachShader(program, vertex_shader)
+    glAttachShader(program, fragment_shader)
+    glLinkProgram(program)
+    success = glGetProgramiv(program, GL_LINK_STATUS)
+
+    if not success:
+        print('Program linking error:')
+        print(glGetProgramInfoLog(program).decode('UTF-8'))
+
+    glDeleteShader(vertex_shader)
+    glDeleteShader(fragment_shader)
+
+    return program
+
 
 def startup():
+    global rendering_program
+    global vertex_array_object
+    global vertex_buffer
+
+    print("OpenGL {}, GLSL {}\n".format(
+        glGetString(GL_VERSION).decode('UTF-8').split()[0],
+        glGetString(GL_SHADING_LANGUAGE_VERSION).decode('UTF-8').split()[0]
+    ))
+
     update_viewport(None, 400, 400)
-    glClearColor(0.0, 0.0, 0.0, 1.0)
     glEnable(GL_DEPTH_TEST)
 
-    glMaterialfv(GL_FRONT, GL_AMBIENT, mat_ambient)
-    glMaterialfv(GL_FRONT, GL_DIFFUSE, mat_diffuse)
-    glMaterialfv(GL_FRONT, GL_SPECULAR, mat_specular)
-    glMaterialf(GL_FRONT, GL_SHININESS, mat_shininess)
+    rendering_program = compile_shaders()
 
-    glLightfv(GL_LIGHT0, GL_AMBIENT, light_ambient)
-    glLightfv(GL_LIGHT0, GL_DIFFUSE, light_diffuse)
-    glLightfv(GL_LIGHT0, GL_SPECULAR, light_specular)
-    glLightfv(GL_LIGHT0, GL_POSITION, light_position)
+    vertex_array_object = glGenVertexArrays(1)
+    glBindVertexArray(vertex_array_object)
 
-    glLightf(GL_LIGHT0, GL_CONSTANT_ATTENUATION, att_constant)
-    glLightf(GL_LIGHT0, GL_LINEAR_ATTENUATION, att_linear)
-    glLightf(GL_LIGHT0, GL_QUADRATIC_ATTENUATION, att_quadratic)
+    vertex_positions = numpy.array([
+        -0.25, +0.25, -0.25, 0.2, 0.9, 0.1,
+        -0.25, -0.25, -0.25, 0.2, 0.9, 0.1,
+        +0.25, -0.25, -0.25, 0.2, 0.9, 0.1,
 
-    glShadeModel(GL_SMOOTH)
-    glEnable(GL_LIGHTING)
-    glEnable(GL_LIGHT0)
+        +0.25, -0.25, -0.25, 0.2, 0.9, 0.1,
+        +0.25, +0.25, -0.25, 0.2, 0.9, 0.1,
+        -0.25, +0.25, -0.25, 0.2, 0.9, 0.1,
 
-    glEnable(GL_TEXTURE_2D)
-    glEnable(GL_CULL_FACE)
-    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        +0.25, -0.25, -0.25, 0.22, 0.9, 0.6,
+        +0.25, -0.25, +0.25, 0.22, 0.9, 0.6,
+        +0.25, +0.25, -0.25, 0.22, 0.9, 0.6,
 
+        +0.25, -0.25, +0.25, 0.22, 0.9, 0.6,
+        +0.25, +0.25, +0.25, 0.22, 0.9, 0.6,
+        +0.25, +0.25, -0.25, 0.22, 0.9, 0.6,
 
+        +0.25, -0.25, +0.25, 0.9, 0.8, 0.3,
+        -0.25, -0.25, +0.25,0.9, 0.8, 0.3,
+        +0.25, +0.25, +0.25, 0.9, 0.8, 0.3,
+
+        -0.25, -0.25, +0.25,0.9, 0.8, 0.3,
+        -0.25, +0.25, +0.25, 0.9, 0.8, 0.3,
+        +0.25, +0.25, +0.25, 0.9, 0.8, 0.3,
+
+        -0.25, -0.25, +0.25, 0.2, 0.12, 0.1,
+        -0.25, -0.25, -0.25, 0.2, 0.12, 0.1,
+        -0.25, +0.25, +0.25, 0.2, 0.12, 0.1,
+
+        -0.25, -0.25, -0.25,0.2, 0.12, 0.1,
+        -0.25, +0.25, -0.25,0.2, 0.12, 0.1,
+        -0.25, +0.25, +0.25,  0.2, 0.12, 0.1,
+
+        -0.25, -0.25, +0.25, 0.1, 0.8, 0.3,
+        +0.25, -0.25, +0.25, 0.1, 0.8, 0.3,
+        +0.25, -0.25, -0.25, 0.1, 0.8, 0.3,
+
+        +0.25, -0.25, -0.25, 0.1, 0.8, 0.3,
+        -0.25, -0.25, -0.25, 0.1, 0.8, 0.3,
+        -0.25, -0.25, +0.25,0.1, 0.8, 0.3,
+
+        -0.25, +0.25, -0.25,0.7, 0.2, 0.6,
+        +0.25, +0.25, -0.25, 0.7, 0.2, 0.6,
+        +0.25, +0.25, +0.25, 0.7, 0.2, 0.6,
+
+        +0.25, +0.25, +0.25, 0.7, 0.2, 0.6,
+        -0.25, +0.25, +0.25,  0.7, 0.2, 0.6,
+        -0.25, +0.25, -0.25, 0.7, 0.2, 0.6,
+    ], dtype=numpy.float32)
+
+    vertex_buffer = glGenBuffers(1)
+    glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer)
+    glBufferData(GL_ARRAY_BUFFER,vertex_positions.nbytes, vertex_positions, GL_STATIC_DRAW)
+
+    stride = 6 *numpy.dtype(numpy.float32).itemsize
+    offset = 0
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(offset))
+    glEnableVertexAttribArray(0)
+
+    offset = 3 *numpy.dtype(numpy.float32).itemsize
+    
+
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(offset))
+    glEnableVertexAttribArray(1)
 
 def shutdown():
-    pass
+    global rendering_program
+    global vertex_array_object
+    global vertex_buffer
+
+    glDeleteProgram(rendering_program)
+    glDeleteVertexArrays(1, vertex_array_object)
+    glDeleteBuffers(1, vertex_buffer)
 
 
 def render(time):
-    global theta
-    global z_pressed
-    global image
-    global image2
+    glClearBufferfv(GL_COLOR, 0, [0.0, 0.0, 0.0, 1.0])
+    glClearBufferfi(GL_DEPTH_STENCIL, 0, 1.0, 0)
 
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-    glLoadIdentity()
+    M_matrix = glm.rotate(glm.mat4(1.0), time, glm.vec3(1.0, 1.0, 0.0))
 
-    gluLookAt(viewer[0], viewer[1], viewer[2],
-              0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
-
-    if left_mouse_button_pressed:
-        theta += delta_x * pix2angle
-
-    glRotatef(theta, 0.0, 1.0, 0.0)
-
-
-    if space_pressed:
-        glTexImage2D(
-        GL_TEXTURE_2D, 0, 3, image2.size[0], image2.size[1], 0,
-        GL_RGB, GL_UNSIGNED_BYTE, image2.tobytes("raw", "RGB", 0, -1)
-    )
-    else:
-            glTexImage2D(
-        GL_TEXTURE_2D, 0, 3, image.size[0], image.size[1], 0,
-        GL_RGB, GL_UNSIGNED_BYTE, image.tobytes("raw", "RGB", 0, -1)
+    V_matrix = glm.lookAt(
+        glm.vec3(0.0, 0.0, 1.0),
+        glm.vec3(0.0, 0.0, 0.0),
+        glm.vec3(0.0, 1.0, 0.0)
     )
 
+    glUseProgram(rendering_program)
 
-    glBegin(GL_TRIANGLES)
-    glTexCoord2f(0.0, 0.0)
-    glVertex3f(-5.0, -5.0, 0.0)
-    glTexCoord2f(1.0, 0.0)
-    glVertex3f(5.0, -5.0, 0.0)
-    glTexCoord2f(0.5, 1.0)
-    glVertex3f(-5.0, 5.0, 0.0)
-    glEnd()
+    M_location = glGetUniformLocation(rendering_program, "M_matrix")
+    V_location = glGetUniformLocation(rendering_program, "V_matrix")
+    P_location = glGetUniformLocation(rendering_program, "P_matrix")
+    glUniformMatrix4fv(M_location, 1, GL_FALSE, glm.value_ptr(M_matrix))
+    glUniformMatrix4fv(V_location, 1, GL_FALSE, glm.value_ptr(V_matrix))
+    glUniformMatrix4fv(P_location, 1, GL_FALSE, glm.value_ptr(P_matrix))
 
-
-    glBegin(GL_TRIANGLES)
-    glTexCoord2f(0.0, 0.0)
-    glVertex3f(-5.0, 5.0, 0.0)
-    glTexCoord2f(1.0, 0.0)
-    glVertex3f(5.0, -5.0, 0.0)
-    glTexCoord2f(0.5, 1.0)
-    glVertex3f(5.0, 5.0, 0.0)
-    glEnd()
-
-    #Prawy
-    glBegin(GL_TRIANGLES)
-    glTexCoord2f(0.0, 1.0)
-    glVertex3f(5.0, -5.0, 0.0)
-    glTexCoord2f(1.0, 1.0)
-    glVertex3f(5.0, 5.0, 0.0)
-    glTexCoord2f(0.5, 0.5)
-    glVertex3f(0.0, 0.0, 5.0)
-    glEnd()
-    
-
-    if(z_pressed == 0):
-    #Górny
-        glBegin(GL_TRIANGLES)
-        glTexCoord2f(1.0, 1.0)
-        glVertex3f(5.0, 5.0, 0.0)
-        glTexCoord2f(1.0, 0.0)
-        glVertex3f(-5.0, 5.0, 0.0)
-        glTexCoord2f(0.5, 0.5)
-        glVertex3f(0.0, 0.0, 5.0)
-        glEnd()
-
-    #Lewy
-    glBegin(GL_TRIANGLES)
-    glTexCoord2f(1.0, 0.0)
-    glVertex3f(-5.0, 5.0, 0.0)
-    glTexCoord2f(0.0, 0.0)
-    glVertex3f(-5.0, -5.0, 0.0)
-    glTexCoord2f(0.5, 0.5)
-    glVertex3f(0.0, 0.0, 5.0)
-    glEnd()
-    
-    #Dolny
-    glBegin(GL_TRIANGLES)
-    glTexCoord2f(0.0, 0.0)
-    glVertex3f(-5.0, -5.0, 0.0)
-    glTexCoord2f(0.0, 1.0)
-    glVertex3f(5.0, -5.0, 0.0)
-    glTexCoord2f(0.5, 0.5)
-    glVertex3f(0.0, 0.0, 5.0)
-    glEnd()
-
-
-    glFlush()
+    glDrawArrays(GL_TRIANGLES, 0, 36)
 
 
 def update_viewport(window, width, height):
-    global pix2angle
-    pix2angle = 360.0 / width
+    global P_matrix
 
-    glMatrixMode(GL_PROJECTION)
-    glLoadIdentity()
+    aspect = width / height
+    P_matrix = glm.perspective(glm.radians(70.0), aspect, 0.1, 1000.0)
 
-    gluPerspective(70, 1.0, 0.1, 300.0)
-
-    if width <= height:
-        glViewport(0, int((height - width) / 2), width, width)
-    else:
-        glViewport(int((width - height) / 2), 0, height, height)
-
-    glMatrixMode(GL_MODELVIEW)
-    glLoadIdentity()
+    glViewport(0, 0, width, height)
 
 
 def keyboard_key_callback(window, key, scancode, action, mods):
-    global z_pressed
-    global space_pressed
     if key == GLFW_KEY_ESCAPE and action == GLFW_PRESS:
         glfwSetWindowShouldClose(window, GLFW_TRUE)
 
-    if key == GLFW_KEY_Z and action == GLFW_PRESS:
-        z_pressed = 1
-    else:
-        z_pressed = 0
 
-    if key == GLFW_KEY_SPACE and action == GLFW_PRESS:
-        space_pressed = 1
-    else:
-        space_pressed = 0
-
-
-def mouse_motion_callback(window, x_pos, y_pos):
-    global delta_x
-    global mouse_x_pos_old
-
-    delta_x = x_pos - mouse_x_pos_old
-    mouse_x_pos_old = x_pos
-
-
-def mouse_button_callback(window, button, action, mods):
-    global left_mouse_button_pressed
-
-    if button == GLFW_MOUSE_BUTTON_LEFT and action == GLFW_PRESS:
-        left_mouse_button_pressed = 1
-    else:
-        left_mouse_button_pressed = 0
+def glfw_error_callback(error, description):
+    print('GLFW Error:', description)
 
 
 def main():
+    glfwSetErrorCallback(glfw_error_callback)
+
     if not glfwInit():
         sys.exit(-1)
+
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE)
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3)
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3)
+    # Poniższą linijkę odkomentować w przypadku pracy w systemie macOS!
+    # glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE)
 
     window = glfwCreateWindow(400, 400, __file__, None, None)
     if not window:
@@ -232,8 +242,6 @@ def main():
     glfwMakeContextCurrent(window)
     glfwSetFramebufferSizeCallback(window, update_viewport)
     glfwSetKeyCallback(window, keyboard_key_callback)
-    glfwSetCursorPosCallback(window, mouse_motion_callback)
-    glfwSetMouseButtonCallback(window, mouse_button_callback)
     glfwSwapInterval(1)
 
     startup()
